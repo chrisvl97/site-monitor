@@ -1,0 +1,40 @@
+name: Alienware Arena Monitor
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'  # Runs every 15 minutes
+  workflow_dispatch:  # Allows manual trigger
+
+permissions:
+  contents: write  # Required to commit state.json
+
+jobs:
+  check-giveaway:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install requests
+      
+      - name: Run monitor script
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: |
+          python monitor.py
+      
+      - name: Commit state changes
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add state.json || true
+          git diff --quiet && git diff --staged --quiet || git commit -m "Update state.json"
+          git push || true
