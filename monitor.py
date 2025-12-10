@@ -22,7 +22,9 @@ LENOVO_VALID_STATUS_IDS = [
 ]
 
 STATE_FILE = "state.json"
-NTFY_TOPIC = os.environ.get("NTFY_TOPIC")
+
+# Διάβασε το Topic από το περιβάλλον (GitHub) ή βάλε το δικό σου εδώ (PC)
+NTFY_TOPIC = os.environ.get("NTFY_TOPIC") or "ΤΟ_ΔΙΚΟ_ΣΟΥ_TOPIC_ΕΔΩ" 
 
 # Headers (Brave Style)
 HEADERS = {
@@ -48,7 +50,7 @@ def save_state(state):
         json.dump(state, f, indent=4)
 
 def send_notification(message, title="Giveaway Alert"):
-    if not NTFY_TOPIC:
+    if not NTFY_TOPIC or NTFY_TOPIC == "ΤΟ_ΔΙΚΟ_ΣΟΥ_TOPIC_ΕΔΩ":
         print(f"⚠️ Skipping notification (no topic): {title}")
         return
     
@@ -216,8 +218,7 @@ def check_lenovo_giveaways(current_state):
                     print(f"   Found NEW active drop: {post_title}")
                     new_active_titles.append(post_title)
                 else:
-                    # Απλά για debug, να ξέρουμε ότι το είδαμε
-                    # print(f"   Found existing drop: {post_title}")
+                    # Το βρήκαμε, είναι ακόμα active, όλα καλά.
                     pass
         
         # Στέλνουμε ειδοποίηση ΜΟΝΟ αν βρέθηκαν ΝΕΑ giveaways
@@ -228,9 +229,19 @@ def check_lenovo_giveaways(current_state):
         else:
             print("   No new Lenovo drops found.")
 
-        # Αποθηκεύουμε ΟΛΑ τα active IDs στο state για την επόμενη φορά
+        # --- ΕΔΩ ΕΙΝΑΙ Η ΜΑΓΕΙΑ ΓΙΑ ΤΑ EXPIRED ---
+        # Βρίσκουμε ποια IDs υπήρχαν στο παλιό state αλλά ΔΕΝ υπάρχουν στο τωρινό active list
+        expired_ids = list(set(known_ids) - set(current_active_ids))
+        if expired_ids:
+            print(f"   🗑️  Cleaning up {len(expired_ids)} expired/ended giveaways from state.")
+            # Δεν χρειάζεται να κάνουμε τίποτα άλλο, καθώς παρακάτω
+            # αντικαθιστούμε ΟΛΗ τη λίστα με τα 'current_active_ids'.
+            # Άρα τα expired σβήνονται αυτόματα!
+
+        # Αποθηκεύουμε ΜΟΝΟ τα active IDs στο state
+        # Έτσι, αν κάποιο λήξει, την επόμενη φορά δεν θα υπάρχει εδώ.
         current_state["lenovo_known_ids"] = current_active_ids
-        print(f"   Lenovo Check Done. Total Active in memory: {len(current_active_ids)}")
+        print(f"   Lenovo Check Done. Active Count Saved: {len(current_active_ids)}")
 
     except Exception as e:
         print(f"❌ Error checking Lenovo: {e}")
