@@ -4,11 +4,33 @@ import json
 import os
 import sys
 
-# Configuration
-GIVEAWAY_URL = "https://eu.alienwarearena.com/ucf/Giveaway"
-VAULT_URL = "https://eu.alienwarearena.com/marketplace/game-vault"
+# --- CONFIGURATION ---
+# Alienware
+ALIENWARE_GIVEAWAY_URL = "https://eu.alienwarearena.com/ucf/Giveaway"
+ALIENWARE_VAULT_URL = "https://eu.alienwarearena.com/marketplace/game-vault"
+
+# Lenovo
+LENOVO_URL = "https://gaming.lenovo.com/game-key-drops"
+LENOVO_API_URL = "https://api.bettermode.com/"
+LENOVO_SPACE_ID = "y4nnEocBKMA2"
+# IDs για Active Giveaways (Αυτά βρήκαμε με την "κατάσκοπεία" μας)
+LENOVO_VALID_STATUS_IDS = [
+    "AmAI_EO502mWht5Fb6OE0", # Active
+    "d18QrMHpWMZMD1C4kJRZI"  # Active (Alternative)
+]
+
 STATE_FILE = "state.json"
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC")
+
+# Headers για να μοιάζουμε με Browser (Brave)
+HEADERS = {
+    'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    'accept-encoding': 'gzip, deflate, br, zstd',
+    'accept-language': 'en-US,en;q=0.6',
+    'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
+    'sec-ch-ua': '"Brave";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
+    'sec-gpc': '1'
+}
 
 def load_state():
     if os.path.exists(STATE_FILE):
@@ -23,17 +45,17 @@ def save_state(state):
     with open(STATE_FILE, 'w') as f:
         json.dump(state, f, indent=4)
 
-def send_notification(message):
+def send_notification(message, title="Giveaway Alert"):
     if not NTFY_TOPIC:
         print(f"Skipping notification (no topic): {message}")
         return
-    
+
     try:
         resp = requests.post(
             f"https://ntfy.sh/{NTFY_TOPIC}",
             data=message.encode('utf-8'),
             headers={
-                "Title": "Alienware Arena Update",
+                "Title": title,
                 "Priority": "default",
             }
         )
@@ -42,49 +64,22 @@ def send_notification(message):
     except Exception as e:
         print(f"Failed to send notification: {e}")
 
-def check_giveaway(current_state):
-    print("Checking Giveaway...")
+# --- ALIENWARE LOGIC ---
+def check_alienware_giveaway(current_state):
+    print("Checking Alienware Giveaway...")
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        }
-        response = requests.get(GIVEAWAY_URL, headers=headers)
+        response = requests.get(ALIENWARE_GIVEAWAY_URL, headers=HEADERS)
         response.raise_for_status()
         content = response.text
 
-        # Parse Title
-        # Pattern: js-widget-title">(X)<
         title_match = re.search(r'js-widget-title">([^<]+)<', content)
         current_title = title_match.group(1).strip() if title_match else None
 
-        # Parse Keys
-        # Pattern: var countryKeys = { ... };
-        # We need to extract the JSON object from the variable assignment.
         keys_match = re.search(r'var countryKeys\s*=\s*(\{.*?\});', content, re.DOTALL)
         current_keys = 0
         if keys_match:
             try:
-                keys_json_str = keys_match.group(1)
-                # The JSON might contain trailing commas or other JS-specific syntax that json.loads might dislike if not strict JSON.
-                # However, the user snippet looks like valid JSON (keys quoted).
-                # Let's try to load it.
-                keys_data = json.loads(keys_json_str)
-                
-                # Calculate total keys. 
-                # Structure: "CountryCode": {"1": count} or []
-                # It seems "1" is the key for the count? Or maybe the level?
-                # User example: "AC": {"1": 1353}
-                # Let's sum up all values found in the dictionaries.
-                # Note: It seems the count 1353 is repeated for many countries. 
-                # It might be the *same* pool of keys available to all those countries.
-                # If we sum them, we might get a huge number (1353 * 100 countries).
-                # If it's a global pool, we should just take the max value found?
-                # User said "check countryKeys generally and try to pull keys correctly".
-                # If I see 1353 everywhere, it's likely the total available.
-                # I will take the maximum value found across all countries to be safe, 
-                # assuming it's a shared pool. If it were separate pools, the user would probably care about their specific country.
-                # But since I don't know the user's country, reporting the max available keys seems like a good proxy for "are there keys?".
-                
+                keys_data = json.loads(keys_match.group(1))
                 max_keys = 0
                 for country, data in keys_data.items():
                     if isinstance(data, dict):
@@ -92,77 +87,152 @@ def check_giveaway(current_state):
                             if isinstance(count, int) and count > max_keys:
                                 max_keys = count
                 current_keys = max_keys
-                
-            except json.JSONDecodeError as e:
-                print(f"Failed to parse countryKeys JSON: {e}")
-        else:
-            print("Could not find countryKeys variable.")
+            except:
+                pass
 
-        print(f"Found Giveaway: {current_title} (Keys: {current_keys})")
+        print(f"Found Alienware: {current_title} (Keys: {current_keys})")
 
-        last_title = current_state.get("giveaway_title")
-        
-        # Logic: Notify if title changed
+        last_title = current_state.get("alienware_giveaway_title")
+
         if current_title and current_title != last_title:
-            msg = f"New Giveaway Detected!\nTitle: {current_title}\nKeys Available: {current_keys}"
-            send_notification(msg)
-            current_state["giveaway_title"] = current_title
-        
-        # Update keys in state regardless, or maybe we only care about title change?
-        # User said: "αν έχει αλλάξει ο τίτλος... τότε θα με ενημερώνει"
-        # So we only notify on title change.
-        
-    except Exception as e:
-        print(f"Error checking giveaway: {e}")
+            msg = f"New Alienware Giveaway!\nTitle: {current_title}\nKeys: {current_keys}"
+            send_notification(msg, "Alienware Alert")
+            current_state["alienware_giveaway_title"] = current_title
 
-def check_vault(current_state):
-    print("Checking Game Vault...")
+    except Exception as e:
+        print(f"Error checking Alienware giveaway: {e}")
+
+def check_alienware_vault(current_state):
+    print("Checking Alienware Vault...")
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        }
-        response = requests.get(VAULT_URL, headers=headers)
+        response = requests.get(ALIENWARE_VAULT_URL, headers=HEADERS)
         response.raise_for_status()
         content = response.text
 
-        # Parse Vault Status
-        # Pattern: data-product-disabled="(X)"
-        # If true -> Closed, else Open (if false or not present? User said "An einai true tote simainei vault kleisto allios anoixto")
-        
-        # We need to find the specific element. There might be multiple products? 
-        # The user said "H pliroforia vrisketai sto data-product-disabled".
-        # Assuming there's a main vault status or we just check the first one?
-        # Usually Game Vault has one main status or multiple items.
-        # Let's look for the first occurrence as a simple check, or maybe we should check if *any* is open?
-        # User instructions were specific about the attribute. I will search for it.
-        
         disabled_match = re.search(r'data-product-disabled="(true|false)"', content)
-        is_disabled_str = disabled_match.group(1) if disabled_match else "true" # Default to closed if not found?
-        
-        is_closed = is_disabled_str == "true"
-        status_str = "Closed" if is_closed else "Open"
-        
+        is_disabled_str = disabled_match.group(1) if disabled_match else "true"
+
+        status_str = "Closed" if is_disabled_str == "true" else "Open"
         print(f"Vault Status: {status_str}")
 
-        last_status = current_state.get("vault_status")
-        
-        # Notify on change
+        last_status = current_state.get("alienware_vault_status")
+
         if last_status is not None and last_status != status_str:
-            msg = f"Game Vault Status Changed!\nNew Status: {status_str}"
-            send_notification(msg)
-        
-        current_state["vault_status"] = status_str
+            msg = f"Alienware Vault Status Changed!\nNew Status: {status_str}"
+            send_notification(msg, "Alienware Vault")
+
+        current_state["alienware_vault_status"] = status_str
 
     except Exception as e:
         print(f"Error checking vault: {e}")
 
+# --- LENOVO LOGIC ---
+def get_lenovo_token():
+    print("Getting Lenovo Token...")
+    try:
+        r = requests.get(LENOVO_URL, headers=HEADERS)
+        if r.status_code != 200: return None
+        match = re.search(r'"accessToken":"([^"]+)"', r.text)
+        return match.group(1) if match else None
+    except Exception as e:
+        print(f"Lenovo Token Error: {e}")
+        return None
+
+def check_lenovo_giveaways(current_state):
+    print("Checking Lenovo Gaming...")
+    token = get_lenovo_token()
+    if not token:
+        print("Skipping Lenovo check (No Token)")
+        return
+
+    # GraphQL Query (Ζητάμε τα πάντα και φιλτράρουμε εμείς για να αποφύγουμε errors)
+    query = """
+    query GetSpacePosts($spaceId: ID!, $limit: Int!) {
+      posts(spaceIds: [$spaceId], limit: $limit, orderBy: publishedAt, reverse: true) {
+        nodes {
+          id
+          title
+          url
+          fields {
+            key
+            value
+          }
+        }
+      }
+    }
+    """
+
+    api_headers = HEADERS.copy()
+    api_headers.update({
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Origin": "https://gaming.lenovo.com",
+        "Referer": LENOVO_URL
+    })
+
+    try:
+        response = requests.post(
+            LENOVO_API_URL,
+            json={"query": query, "variables": {"spaceId": LENOVO_SPACE_ID, "limit": 50}},
+            headers=api_headers
+        )
+        data = response.json()
+
+        if 'errors' in data:
+            print(f"Lenovo API Error: {data['errors']}")
+            return
+
+        posts = data.get('data', {}).get('posts', {}).get('nodes', [])
+
+        # Λίστα με τα Active Giveaways που βρήκαμε ΤΩΡΑ
+        current_active_ids = []
+        new_giveaway_titles = []
+
+        for post in posts:
+            is_active = False
+            for field in post['fields']:
+                if field['key'] == 'status':
+                    # Καθαρισμός του value
+                    raw_val = field['value'].replace('"', '').replace('[', '').replace(']', '').replace('\\', '')
+                    if raw_val in LENOVO_VALID_STATUS_IDS:
+                        is_active = True
+                        break
+
+            if is_active:
+                post_id = post['id']
+                post_title = post['title']
+                current_active_ids.append(post_id)
+
+                # Έλεγχος αν αυτό το ID το ξέρουμε από πριν
+                known_ids = current_state.get("lenovo_known_ids", [])
+                if post_id not in known_ids:
+                    print(f"New Active Lenovo Giveaway found: {post_title}")
+                    new_giveaway_titles.append(post_title)
+
+        # Αν βρήκαμε νέα, στέλνουμε ειδοποίηση
+        if new_giveaway_titles:
+            msg = "New Lenovo Active Drop(s):\n" + "\n".join(new_giveaway_titles)
+            send_notification(msg, "Lenovo Drop Alert")
+
+        # Ανανεώνουμε τη λίστα με τα γνωστά IDs στο state
+        # Κρατάμε ότι είναι active τώρα, για να μην ξαναστείλουμε για τα ίδια
+        # Προσοχή: Κρατάμε ΟΛΑ όσα βρήκαμε ενεργά τώρα ως "γνωστά"
+        current_state["lenovo_known_ids"] = current_active_ids
+        print(f"Lenovo Check Done. Active Count: {len(current_active_ids)}")
+
+    except Exception as e:
+        print(f"Error checking Lenovo: {e}")
+
+# --- MAIN ---
 def main():
     state = load_state()
-    
-    check_giveaway(state)
-    check_vault(state)
-    
+
+    check_alienware_giveaway(state)
+    check_alienware_vault(state)
+    check_lenovo_giveaways(state)
+
     save_state(state)
 
 if __name__ == "__main__":
     main()
+
