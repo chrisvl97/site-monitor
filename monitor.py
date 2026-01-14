@@ -3,6 +3,7 @@ import re
 import json
 import os
 import sys
+from datetime import datetime, timezone, timedelta
 
 # --- CONFIGURATION ---
 # Alienware URLs
@@ -49,7 +50,7 @@ def save_state(state):
     with open(STATE_FILE, 'w') as f:
         json.dump(state, f, indent=4)
 
-def send_notification(message, title="Giveaway Alert"):
+def send_notification(message, title="Giveaway Alert", priority="default"):
     if not NTFY_TOPIC or NTFY_TOPIC == "ΤΟ_ΔΙΚΟ_ΣΟΥ_TOPIC_ΕΔΩ":
         print(f"⚠️ Skipping notification (no topic): {title}")
         return
@@ -60,13 +61,26 @@ def send_notification(message, title="Giveaway Alert"):
             data=message.encode('utf-8'),
             headers={
                 "Title": title,
-                "Priority": "default",
+                "Priority": priority,
             }
         )
         resp.raise_for_status()
         print(f"✅ Notification sent: {title}")
     except Exception as e:
         print(f"❌ Failed to send notification: {e}")
+
+def parse_iso_date(date_str):
+    """Βοηθητική για να διαβάζουμε ημερομηνίες ISO (ακόμα και με το Z στο τέλος)"""
+    if not date_str: return None
+    try:
+        # Καθαρίζουμε εισαγωγικά αν υπάρχουν
+        clean_str = date_str.replace('"', '').replace("'", "")
+        # Αντικατάσταση Z με +00:00 για συμβατότητα με παλιότερες Python
+        clean_str = clean_str.replace('Z', '+00:00')
+        return datetime.fromisoformat(clean_str)
+    except Exception as e:
+        # print(f"Date parse error: {e}")
+        return None
 
 # --- ALIENWARE CHECKS ---
 def check_alienware_giveaway(current_state):
@@ -98,7 +112,6 @@ def check_alienware_giveaway(current_state):
 
         last_title = current_state.get("alienware_giveaway_title")
         
-        # Ειδοποίηση ΜΟΝΟ αν άλλαξε ο τίτλος του Alienware
         if current_title and current_title != last_title:
             msg = f"New Alienware Giveaway!\nTitle: {current_title}\nKeys: {current_keys}"
             send_notification(msg, "Alienware Alert")
@@ -122,7 +135,6 @@ def check_alienware_vault(current_state):
 
         last_status = current_state.get("alienware_vault_status")
         
-        # Ειδοποίηση ΜΟΝΟ αν άλλαξε το status του Alienware Vault
         if last_status is not None and last_status != status_str:
             msg = f"Alienware Vault Status Changed!\nNew Status: {status_str}"
             send_notification(msg, "Alienware Vault")
@@ -150,7 +162,6 @@ def check_lenovo_giveaways(current_state):
         print("⚠️ Skipping Lenovo check (No Token found)")
         return
 
-    # Ζητάμε τα 50 τελευταία posts
     query = """
     query GetSpacePosts($spaceId: ID!, $limit: Int!) {
       posts(spaceIds: [$spaceId], limit: $limit, orderBy: publishedAt, reverse: true) {
@@ -189,76 +200,107 @@ def check_lenovo_giveaways(current_state):
 
         posts = data.get('data', {}).get('posts', {}).get('nodes', [])
         
-        current_active_ids = []    # Όλα τα active IDs που βρήκαμε τώρα
-        new_active_titles = []     # Μόνο οι τίτλοι των ΝΕΩΝ active
+        # Ανάκτηση των αποθηκευμένων giveaways (ή δημιουργία νέου λεξικού αν δεν υπάρχει)
+        # Η δομή τώρα είναι: { "ID": { "title": "...", "start_date": "...", "reminded_24h": false, ... } }
+        saved_giveaways = current_state.get("lenovo_giveaways", {})
+        
+        # Αν υπήρχε η παλιά λίστα (lenovo_known_ids), τη σβήνουμε ή την αγνοούμε
+        # για να περάσουμε στο νέο σύστημα.
 
-        # Παίρνουμε τη λίστα με τα IDs που ξέραμε από την προηγούμενη φορά
-        known_ids = current_state.get("lenovo_known_ids", [])
+        current_active_ids = [] # Για να ξέρουμε ποια είναι ακόμα ζωντανά
+        
+        now_utc = datetime.now(timezone.utc)
 
         for post in posts:
             is_active = False
-            # Έλεγχος Status
+            status_val = "Unknown"
+            start_date_str = None
+
+            # Ανάλυση πεδίων (Status & Start Date)
             for field in post['fields']:
                 if field['key'] == 'status':
-                    # Καθαρισμός του value από σκουπίδια JSON
-                    raw_val = field['value'].replace('"', '').replace('[', '').replace(']', '').replace('\\', '')
-                    if raw_val in LENOVO_VALID_STATUS_IDS:
+                    status_val = field['value'].replace('"', '').replace('[', '').replace(']', '').replace('\\', '')
+                    if status_val in LENOVO_VALID_STATUS_IDS:
                         is_active = True
-                        break
-            
+                
+                if field['key'] == 'start_date':
+                    start_date_str = field['value']
+
             if is_active:
                 post_id = post['id']
                 post_title = post['title']
-                
-                # Το προσθέτουμε στη λίστα των τωρινών Active
                 current_active_ids.append(post_id)
-
-                # Αν αυτό το ID δεν υπήρχε στα known_ids, είναι ΚΑΙΝΟΥΡΙΟ
-                if post_id not in known_ids:
+                
+                # Έλεγχος αν το έχουμε ξαναδεί
+                if post_id not in saved_giveaways:
                     print(f"   Found NEW active drop: {post_title}")
-                    new_active_titles.append(post_title)
+                    send_notification(f"New Lenovo Drop Detected!\n{post_title}", "Lenovo Alert", "high")
+                    
+                    # Αποθήκευση στο state
+                    saved_giveaways[post_id] = {
+                        "title": post_title,
+                        "start_date": start_date_str,
+                        "status": status_val,
+                        "reminded_24h": False,
+                        "reminded_30m": False
+                    }
                 else:
-                    # Το βρήκαμε, είναι ακόμα active, όλα καλά.
-                    pass
+                    # Το ξέρουμε ήδη, ας ελέγξουμε για reminders!
+                    giveaway_data = saved_giveaways[post_id]
+                    giveaway_data["status"] = status_val # Ενημέρωση status (π.χ. από Coming Soon σε Active)
+                    
+                    # Αν έχουμε ημερομηνία έναρξης
+                    if start_date_str:
+                        start_dt = parse_iso_date(start_date_str)
+                        
+                        if start_dt:
+                            time_left = start_dt - now_utc
+                            
+                            # Reminder 24 ώρες πριν (μέσα στο παράθυρο 23h - 24h)
+                            # Ή απλά αν είναι λιγότερο από 24h και δεν έχουμε ειδοποιήσει
+                            if timedelta(hours=0) < time_left <= timedelta(hours=24):
+                                if not giveaway_data.get("reminded_24h"):
+                                    print(f"   ⏰ 24h Reminder for: {post_title}")
+                                    send_notification(f"⏰ Reminder: Starts in < 24h!\n{post_title}", "Lenovo Reminder", "high")
+                                    giveaway_data["reminded_24h"] = True
+                            
+                            # Reminder 30 λεπτά πριν (μέσα στο παράθυρο 0 - 30m)
+                            if timedelta(minutes=0) < time_left <= timedelta(minutes=30):
+                                if not giveaway_data.get("reminded_30m"):
+                                    print(f"   🔥 30m Reminder for: {post_title}")
+                                    send_notification(f"🔥 HURRY: Starts in < 30m!\n{post_title}", "Lenovo Urgent", "urgent")
+                                    giveaway_data["reminded_30m"] = True
+                            
+                            # Αν ξεκίνησε ήδη (time_left < 0), θεωρητικά είναι Active τώρα.
         
-        # Στέλνουμε ειδοποίηση ΜΟΝΟ αν βρέθηκαν ΝΕΑ giveaways
-        if new_active_titles:
-            msg = "New Lenovo Drop(s):\n" + "\n".join(new_active_titles)
-            send_notification(msg, "Lenovo Alert")
-            print(f"🔔 Notification sent for {len(new_active_titles)} new items.")
-        else:
-            print("   No new Lenovo drops found.")
+        # Καθαρισμός (Garbage Collection)
+        # Κρατάμε μόνο όσα υπάρχουν στο current_active_ids
+        # Έτσι σβήνουμε αυτόματα τα expired/ended.
+        clean_giveaways = {}
+        for pid in current_active_ids:
+            if pid in saved_giveaways:
+                clean_giveaways[pid] = saved_giveaways[pid]
+        
+        # Ενημερώνουμε το state με τη καθαρή λίστα
+        current_state["lenovo_giveaways"] = clean_giveaways
+        
+        # Σβήνουμε το παλιό κλειδί αν υπάρχει για να μην πιάνει χώρο
+        if "lenovo_known_ids" in current_state:
+            del current_state["lenovo_known_ids"]
 
-        # --- ΕΔΩ ΕΙΝΑΙ Η ΜΑΓΕΙΑ ΓΙΑ ΤΑ EXPIRED ---
-        # Βρίσκουμε ποια IDs υπήρχαν στο παλιό state αλλά ΔΕΝ υπάρχουν στο τωρινό active list
-        expired_ids = list(set(known_ids) - set(current_active_ids))
-        if expired_ids:
-            print(f"   🗑️  Cleaning up {len(expired_ids)} expired/ended giveaways from state.")
-            # Δεν χρειάζεται να κάνουμε τίποτα άλλο, καθώς παρακάτω
-            # αντικαθιστούμε ΟΛΗ τη λίστα με τα 'current_active_ids'.
-            # Άρα τα expired σβήνονται αυτόματα!
-
-        # Αποθηκεύουμε ΜΟΝΟ τα active IDs στο state
-        # Έτσι, αν κάποιο λήξει, την επόμενη φορά δεν θα υπάρχει εδώ.
-        current_state["lenovo_known_ids"] = current_active_ids
-        print(f"   Lenovo Check Done. Active Count Saved: {len(current_active_ids)}")
+        print(f"   Lenovo Check Done. Active items tracked: {len(clean_giveaways)}")
 
     except Exception as e:
         print(f"❌ Error checking Lenovo: {e}")
 
 # --- MAIN EXECUTION ---
 def main():
-    # Φόρτωση προηγούμενης κατάστασης
     state = load_state()
     
-    # Έλεγχος Alienware (ανεξάρτητος)
     check_alienware_giveaway(state)
     check_alienware_vault(state)
-    
-    # Έλεγχος Lenovo (ανεξάρτητος)
     check_lenovo_giveaways(state)
     
-    # Αποθήκευση νέας κατάστασης
     save_state(state)
 
 if __name__ == "__main__":
